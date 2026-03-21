@@ -243,6 +243,41 @@ def test_create_usage_metadata_reads_dict_prompt_details() -> None:
     assert meta["input_token_details"]["cache_creation"] == 5
 
 
+def test_stream_options_defaults_include_usage() -> None:
+    """Streaming should include usage by default."""
+    llm = ChatLiteLLM(model="gpt-3.5-turbo", api_key="fake")
+    _, params = llm._create_message_dicts([], None)
+    params = {**params, "stream": True}
+    params["stream_options"] = {
+        "include_usage": True,
+        **(llm.stream_options or {}),
+    }
+    assert params["stream_options"]["include_usage"] is True
+
+
+def test_stream_options_preserves_user_options() -> None:
+    """User stream_options should be merged, not replace include_usage."""
+    llm = ChatLiteLLM(
+        model="gpt-3.5-turbo",
+        api_key="fake",
+        stream_options={"custom_key": "value"},
+    )
+    stream_options = {"include_usage": True, **(llm.stream_options or {})}
+    assert stream_options["include_usage"] is True
+    assert stream_options["custom_key"] == "value"
+
+
+def test_stream_options_user_can_disable_usage() -> None:
+    """User should be able to explicitly disable include_usage."""
+    llm = ChatLiteLLM(
+        model="gpt-3.5-turbo",
+        api_key="fake",
+        stream_options={"include_usage": False},
+    )
+    stream_options = {"include_usage": True, **(llm.stream_options or {})}
+    assert stream_options["include_usage"] is False
+
+
 def test_inject_reasoning_content_into_string_content() -> None:
     result = _inject_reasoning_content_into_content("answer", "hidden chain")
 

@@ -102,3 +102,27 @@ class TestChatLiteLLMRouterUnit(ChatModelUnitTests):
         assert msg.usage_metadata["input_tokens"] == 12
         assert msg.usage_metadata["output_tokens"] == 8
         assert msg.usage_metadata["total_tokens"] == 20
+
+    def test_router_stream_options_defaults_include_usage(self):
+        """Router streaming should default include_usage to True."""
+        router = test_router()
+        llm = ChatLiteLLMRouter(router=router)
+        stream_options = {
+            "include_usage": True,
+            **(llm.stream_options or {}),
+        }
+        assert stream_options["include_usage"] is True
+
+    def test_router_stream_options_preserves_user_options(self):
+        """Router should merge user stream_options with include_usage."""
+        router = test_router()
+        llm = ChatLiteLLMRouter(
+            router=router,
+            stream_options={"custom_key": "value"},
+        )
+        stream_options = {
+            "include_usage": True,
+            **(llm.stream_options or {}),
+        }
+        assert stream_options["include_usage"] is True
+        assert stream_options["custom_key"] == "value"
