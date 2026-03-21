@@ -74,7 +74,6 @@ from langchain_core.utils.pydantic import TypeBaseModel, is_basemodel_subclass
 from langchain_core.utils import get_from_dict_or_env, pre_init
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm.types.utils import Delta
-from litellm.utils import get_valid_models
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -354,8 +353,6 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
         
     return message_dict
 
-_OPENAI_MODELS = get_valid_models(custom_llm_provider="openai")
-
 
 class ChatLiteLLM(BaseChatModel):
     """Chat model that uses the LiteLLM API."""
@@ -364,7 +361,9 @@ class ChatLiteLLM(BaseChatModel):
     model: str = "gpt-3.5-turbo"
     model_name: Optional[str] = None
     stream_options: Optional[Dict[str, Any]] = None
-    """Model name to use."""
+    """Options for streaming responses. ``include_usage`` defaults to ``True``
+    so that ``usage_metadata`` is populated on streamed messages. Set
+    ``{"include_usage": False}`` to disable."""
     openai_api_key: Optional[str] = None
     azure_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
@@ -554,13 +553,14 @@ class ChatLiteLLM(BaseChatModel):
     def _create_chat_result(self, response: Mapping[str, Any]) -> ChatResult:
         generations = []
         token_usage = response.get("usage", {})
+        usage_metadata = _create_usage_metadata(token_usage)
         for res in response["choices"]:
             message = _convert_dict_to_message(res["message"])
             if isinstance(message, AIMessage):
                 message.response_metadata = {
                     "model_name": self.model_name or self.model
                 }
-                message.usage_metadata = _create_usage_metadata(token_usage)
+                message.usage_metadata = usage_metadata
             gen = ChatGeneration(
                 message=message,
                 generation_info=dict(finish_reason=res.get("finish_reason"), logprobs=res.get("logprobs")),
@@ -591,15 +591,6 @@ class ChatLiteLLM(BaseChatModel):
         message_dicts = [_convert_message_to_dict(m) for m in messages]
         return message_dicts, params
     
-    def _is_openai(self) -> bool:
-        """Check if the current model is OpenAI or Azure."""
-        model = self.model_name or self.model or ""
-        if self.custom_llm_provider == "openai" or self.custom_llm_provider == "azure":
-            return True
-        if "azure" in model or model in _OPENAI_MODELS:
-            return True
-        return False
-
     def _stream(
         self,
         messages: List[BaseMessage],
@@ -609,12 +600,12 @@ class ChatLiteLLM(BaseChatModel):
     ) -> Iterator[ChatGenerationChunk]:
         message_dicts, params = self._create_message_dicts(messages, stop)
         params = {**params, **kwargs, "stream": True}
-        if self.stream_options is not None:
-            params["stream_options"] = self.stream_options
-        elif self._is_openai():
-            params["stream_options"] = {"include_usage": True}
+        params["stream_options"] = {
+            "include_usage": True,
+            **(self.stream_options or {}),
+        }
         default_chunk_class = AIMessageChunk
-        
+
         for chunk in self.completion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
         ):
@@ -668,12 +659,12 @@ class ChatLiteLLM(BaseChatModel):
     ) -> AsyncIterator[ChatGenerationChunk]:
         message_dicts, params = self._create_message_dicts(messages, stop)
         params = {**params, **kwargs, "stream": True}
-        if self.stream_options is not None:
-            params["stream_options"] = self.stream_options
-        elif self._is_openai():
-            params["stream_options"] = {"include_usage": True}
+        params["stream_options"] = {
+            "include_usage": True,
+            **(self.stream_options or {}),
+        }
         default_chunk_class = AIMessageChunk
-        
+
         async for chunk in await self.acompletion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
         ):
@@ -935,11 +926,20 @@ def _create_usage_metadata(token_usage: Mapping[str, Any]) -> UsageMetadata:
     # Fallback to nested prompt_tokens_details (Anthropic standard)
     if cache_read is None or cache_creation is None:
         prompt_details = token_usage.get("prompt_tokens_details")
-        if isinstance(prompt_details, dict):
-            if cache_read is None:
-                cache_read = prompt_details.get("cached_tokens")
-            if cache_creation is None:
-                cache_creation = prompt_details.get("cache_creation_tokens")
+        if prompt_details is not None:
+            if isinstance(prompt_details, dict):
+                if cache_read is None:
+                    cache_read = prompt_details.get("cached_tokens")
+                if cache_creation is None:
+                    cache_creation = prompt_details.get("cache_creation_tokens")
+            else:
+                # Handle Pydantic models (e.g. LiteLLM PromptTokensDetailsWrapper)
+                if cache_read is None:
+                    cache_read = getattr(prompt_details, "cached_tokens", None)
+                if cache_creation is None:
+                    cache_creation = getattr(
+                        prompt_details, "cache_creation_tokens", None
+                    )
 
     if cache_read is not None:
         input_token_details["cache_read"] = int(cache_read)

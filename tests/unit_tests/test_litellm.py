@@ -2,7 +2,7 @@
 
 from typing import Type
 
-from langchain_core.messages import AIMessageChunk, AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_tests.unit_tests import ChatModelUnitTests
 from litellm.types.utils import ChatCompletionDeltaToolCall, Delta, Function
 
@@ -10,6 +10,7 @@ from langchain_litellm.chat_models import ChatLiteLLM
 from langchain_litellm.chat_models.litellm import (
     _convert_delta_to_message_chunk,
     _convert_dict_to_message,
+    _create_usage_metadata,
     _inject_reasoning_content_into_content,
 )
 
@@ -159,6 +160,87 @@ class TestChatLiteLLMUnit(ChatModelUnitTests):
         
         assert "provider_specific_fields" in result.llm_output
         assert result.llm_output["provider_specific_fields"]["citations"][0]["source"] == "test"
+
+
+def test_create_chat_result_sets_usage_metadata() -> None:
+    """Usage metadata should be set on AIMessage in _create_chat_result."""
+    llm = ChatLiteLLM(model="gpt-3.5-turbo", api_key="fake")
+    mock_response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        },
+    }
+    result = llm._create_chat_result(mock_response)
+    msg = result.generations[0].message
+    assert isinstance(msg, AIMessage)
+    assert msg.usage_metadata is not None
+    assert msg.usage_metadata["input_tokens"] == 10
+    assert msg.usage_metadata["output_tokens"] == 5
+    assert msg.usage_metadata["total_tokens"] == 15
+
+
+def test_create_usage_metadata_from_dict() -> None:
+    """_create_usage_metadata should work with plain dicts."""
+    usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+    meta = _create_usage_metadata(usage)
+    assert meta["input_tokens"] == 20
+    assert meta["output_tokens"] == 10
+    assert meta["total_tokens"] == 30
+
+
+def test_create_usage_metadata_from_litellm_usage() -> None:
+    """_create_usage_metadata should work with LiteLLM Usage objects."""
+    from litellm.types.utils import Usage
+
+    usage = Usage(prompt_tokens=15, completion_tokens=7, total_tokens=22)
+    meta = _create_usage_metadata(usage)
+    assert meta["input_tokens"] == 15
+    assert meta["output_tokens"] == 7
+    assert meta["total_tokens"] == 22
+
+
+def test_create_usage_metadata_reads_pydantic_prompt_details() -> None:
+    """Cache token details should be extracted from Pydantic prompt_tokens_details."""
+    from litellm.types.utils import PromptTokensDetailsWrapper, Usage
+
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        prompt_tokens_details=PromptTokensDetailsWrapper(
+            cached_tokens=30,
+            cache_creation_tokens=10,
+        ),
+    )
+    meta = _create_usage_metadata(usage)
+    assert meta["input_tokens"] == 100
+    assert meta["input_token_details"]["cache_read"] == 30
+    assert meta["input_token_details"]["cache_creation"] == 10
+
+
+def test_create_usage_metadata_reads_dict_prompt_details() -> None:
+    """Cache token details should also work from plain dict prompt_tokens_details."""
+    usage = {
+        "prompt_tokens": 50,
+        "completion_tokens": 25,
+        "total_tokens": 75,
+        "prompt_tokens_details": {
+            "cached_tokens": 15,
+            "cache_creation_tokens": 5,
+        },
+    }
+    meta = _create_usage_metadata(usage)
+    assert meta["input_tokens"] == 50
+    assert meta["input_token_details"]["cache_read"] == 15
+    assert meta["input_token_details"]["cache_creation"] == 5
 
 
 def test_inject_reasoning_content_into_string_content() -> None:

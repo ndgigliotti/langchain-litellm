@@ -11,6 +11,7 @@ from langchain_core.language_models.chat_models import (
     generate_from_stream,
 )
 from langchain_core.messages import (
+    AIMessage,
     AIMessageChunk,
     BaseMessage,
 )
@@ -115,7 +116,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         message_dicts, params = self._create_message_dicts(messages, stop)
         params = {**params, **kwargs, "stream": True}
         params = {k:v for k, v in params.items() if v is not None}
-        params["stream_options"] = self.stream_options
+        params["stream_options"] = {
+            "include_usage": True,
+            **(self.stream_options or {}),
+        }
         self._prepare_params_for_router(params)
 
         for chunk in self.router.completion(messages=message_dicts, **params):
@@ -159,7 +163,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         message_dicts, params = self._create_message_dicts(messages, stop)
         params = {**params, **kwargs, "stream": True}
         params = {k:v for k, v in params.items() if v is not None}
-        params["stream_options"] = self.stream_options
+        params["stream_options"] = {
+            "include_usage": True,
+            **(self.stream_options or {}),
+        }
         self._prepare_params_for_router(params)
 
         async for chunk in await self.router.acompletion(
@@ -254,14 +261,17 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         from litellm.utils import Usage
 
         generations = []
+        token_usage = response.get("usage", Usage(prompt_tokens=0, total_tokens=0))
+        usage_metadata = _create_usage_metadata(token_usage)
         for res in response["choices"]:
             message = _convert_dict_to_message(res["message"])
+            if isinstance(message, AIMessage):
+                message.usage_metadata = usage_metadata
             gen = ChatGeneration(
                 message=message,
                 generation_info=dict(finish_reason=res.get("finish_reason")),
             )
             generations.append(gen)
-        token_usage = response.get("usage", Usage(prompt_tokens=0, total_tokens=0))
         llm_output = get_llm_output(token_usage, **params)
 
         # Check standard field first, then fallback to Vertex specific field
